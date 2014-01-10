@@ -181,6 +181,8 @@ struct RASPIVID_STATE_S
 
    int bCapturing;                     /// State of capture/pause
    int bCircularBuffer;                /// Whether we are writing to a circular buffer
+   int bCircularBufferLength;          /// Buffer length in ms
+   int bCircularBufferToggle;          /// Switch to toggle write to buffer/write to file
 
 };
 
@@ -256,7 +258,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandSegmentWrap,   "-wrap",       "wr", "In segment mode, wrap any numbered filename back to 1 when reach number", 1},
    { CommandSegmentStart,  "-start",      "sn", "In segment mode, start with specified segment number", 1},
    { CommandSplitWait,     "-split",      "sp", "In wait mode, create new output file for each start event", 0},
-   { CommandCircular,      "-circular",   "c",  "Run encoded data through circular buffer until triggered then save", 0},
+   { CommandCircular,      "-circular",   "c",  "Run encoded data through circular buffer until triggered then save. Sets buffer size in ms", 1},
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -314,6 +316,8 @@ static void default_status(RASPIVID_STATE *state)
    state->bCapturing = 0;
    state->bInlineHeaders = 0;
 
+   state->bCircularBufferLength = 0;
+   state->bCircularBufferToggle = 0;
    state->segmentSize = 0;  // 0 = not segmenting the file.
    state->segmentNumber = 1;
    state->segmentWrap = 0; // Point at which to wrap segment number back to 1. 0 = no wrap
@@ -631,7 +635,14 @@ static int parse_cmdline(int argc, const char **argv, RASPIVID_STATE *state)
 
       case CommandCircular:
       {
-         state->bCircularBuffer = 1;
+         if (sscanf(argv[i + 1], "%u", &state->bCircularBufferLength) == 1)
+         {
+            if (state->bCircularBufferLength > 0)
+             state->bCircularBuffer = 1;
+            i++;
+         }
+         else
+            valid = 0;
          break;
       }
 
@@ -827,7 +838,7 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
             pData->file_handle = new_handle;
          }
       }
-      else if (pData->cb_buff)
+      else if (pData->cb_buff && pData->pstate->bCircularBufferToggle==0)
       {
          int space_in_buff = pData->cb_len - pData->cb_wptr;
          int copy_to_end = space_in_buff > buffer->length ? buffer->length : space_in_buff;
@@ -1648,9 +1659,9 @@ int main(int argc, const char **argv)
                vcos_log_error("%s: Error circular buffer requires constant bitrate and small intra period\n", __func__);
                goto error;
             }
-            else if(state.timeout == 0)
+            else if(state.bCircularBufferLength == 0)
             {
-               vcos_log_error("%s: Error, circular buffer size is based on timeout must be greater than zero\n", __func__);
+               vcos_log_error("%s: Error, circular buffer size must be greater than zero\n", __func__);
                goto error;
             }
             else if(state.waitMethod != WAIT_METHOD_KEYPRESS && state.waitMethod != WAIT_METHOD_SIGNAL)
@@ -1665,12 +1676,11 @@ int main(int argc, const char **argv)
             }
             else
             {
-               int count = state.bitrate * (state.timeout / 1000) / 8;
-
+               int count = state.bitrate * (state.bCircularBufferLength / 1000) / 8;
                state.callback_data.cb_buff = (char *) malloc(count);
                if(state.callback_data.cb_buff == NULL)
                {
-                  vcos_log_error("%s: Unable to allocate circular buffer for %d seconds at %.1f Mbits\n", __func__, state.timeout / 1000, (double)state.bitrate/1000000.0);
+                  vcos_log_error("%s: Unable to allocate circular buffer for %d seconds at %.1f Mbits\n", __func__, state.bCircularBufferLength / 1000, (double)state.bitrate/1000000.0);
                   goto error;
                }
                else
@@ -1744,23 +1754,44 @@ int main(int argc, const char **argv)
                }
                
                int initialCapturing=state.bCapturing;
-               while (running)
+
+               if(state.bCircularBuffer)//initial start capturing
                {
-                  // Change state
-
                   state.bCapturing = !state.bCapturing;
-
                   if (mmal_port_parameter_set_boolean(camera_video_port, MMAL_PARAMETER_CAPTURE, state.bCapturing) != MMAL_SUCCESS)
                   {
                      // How to handle?
                   }
-
-                  // In circular buffer mode, exit and save the buffer (make sure we do this after having paused the capture
-                  if(state.bCircularBuffer && !state.bCapturing)
+                  wait_for_next_change(&state);
+               }
+               while (running)
+               {
+                  // Change state
+                  if(!state.bCircularBuffer)
                   {
-                     break;
+                     state.bCapturing = !state.bCapturing;
+                     if (mmal_port_parameter_set_boolean(camera_video_port, MMAL_PARAMETER_CAPTURE, state.bCapturing) != MMAL_SUCCESS)
+                     {
+                        // How to handle?
+                     }
                   }
 
+                  if(state.bCircularBuffer)
+                  {
+                        state.bCircularBufferToggle=1;
+                        state.waitMethod=WAIT_METHOD_NONE;
+                        int copy_from_end, copy_from_start;
+                        copy_from_end = state.callback_data.cb_len - state.callback_data.iframe_buff[state.callback_data.iframe_buff_rpos];
+                        copy_from_start = state.callback_data.cb_len - copy_from_end;
+                        copy_from_start = state.callback_data.cb_wptr < copy_from_start ? state.callback_data.cb_wptr : copy_from_start;
+                        if(!state.callback_data.cb_wrap)
+                        {
+                           copy_from_start = state.callback_data.cb_wptr;
+                           copy_from_end = 0;
+                        }
+                        long fileSizeCircularBuffer=copy_from_start+copy_from_end+state.callback_data.header_wptr;
+                        fseek(state.callback_data.file_handle, fileSizeCircularBuffer, SEEK_SET);
+                  }
                   if (state.verbose)
                   {
                      if (state.bCapturing)
@@ -1786,6 +1817,14 @@ int main(int argc, const char **argv)
                      initialCapturing=0;
                   }
                   running = wait_for_next_change(&state);
+                  if(state.bCircularBuffer)
+                  {
+                     state.bCapturing = !state.bCapturing;
+                     if (mmal_port_parameter_set_boolean(camera_video_port, MMAL_PARAMETER_CAPTURE, state.bCapturing) != MMAL_SUCCESS)
+                     {
+                        // How to handle?
+                     }
+                  }
                }
 
                if (state.verbose)
@@ -1823,6 +1862,7 @@ int main(int argc, const char **argv)
             copy_from_end = 0;
          }
 
+         fseek(state.callback_data.file_handle, 0, SEEK_SET);
          fwrite(state.callback_data.header_bytes, 1, state.callback_data.header_wptr, state.callback_data.file_handle);
          // Save circular buffer
          fwrite(state.callback_data.cb_buff + state.callback_data.iframe_buff[state.callback_data.iframe_buff_rpos], 1, copy_from_end, state.callback_data.file_handle);

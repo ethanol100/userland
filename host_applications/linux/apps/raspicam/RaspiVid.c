@@ -183,6 +183,7 @@ struct RASPIVID_STATE_S
    int bCapturing;                     /// State of capture/pause
    int bCircularBuffer;                /// Whether we are writing to a circular buffer
 
+   int send_data_to_stdout;            ///Additionally send h264 to stdout (not the circular buffer?)
 };
 
 
@@ -232,6 +233,7 @@ static void display_valid_parameters(char *app_name);
 #define CommandSegmentStart 20
 #define CommandSplitWait    21
 #define CommandCircular     22
+#define CommandAddToStdout     23
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -258,6 +260,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandSegmentStart,  "-start",      "sn", "In segment mode, start with specified segment number", 1},
    { CommandSplitWait,     "-split",      "sp", "In wait mode, create new output file for each start event", 0},
    { CommandCircular,      "-circular",   "c",  "Run encoded data through circular buffer until triggered then save", 0},
+   { CommandAddToStdout,   "-stdout",     "cp", "Additionally pipe h264 encoded data to stdout", 0},
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -320,6 +323,7 @@ static void default_status(RASPIVID_STATE *state)
    state->segmentWrap = 0; // Point at which to wrap segment number back to 1. 0 = no wrap
    state->splitNow = 0;
    state->splitWait = 0;
+   state->send_data_to_stdout = 0;
 
    // Setup preview window defaults
    raspipreview_set_defaults(&state->preview_parameters);
@@ -636,6 +640,11 @@ static int parse_cmdline(int argc, const char **argv, RASPIVID_STATE *state)
          break;
       }
 
+      case CommandAddToStdout:
+      {
+         state->send_data_to_stdout = 1;
+         break;
+      }
 
       default:
       {
@@ -900,20 +909,46 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
                   }
                }
             }
+            if(buffer->length && pData->pstate->send_data_to_stdout)
+            {
+               mmal_buffer_header_mem_lock(buffer);
+
+               bytes_written = fwrite(buffer->data, 1, buffer->length, stdout);
+               
+               if (bytes_written != buffer->length)
+               {
+                  vcos_log_error("Failed to write buffer data (%d from %d) to stdout - aborting", bytes_written, buffer->length);
+                  pData->abort = 1;
+               }
+               mmal_buffer_header_mem_unlock(buffer);
+            }         
+
          }
       else if (buffer->length)
       {
          mmal_buffer_header_mem_lock(buffer);
 
          bytes_written = fwrite(buffer->data, 1, buffer->length, pData->file_handle);
-
-         mmal_buffer_header_mem_unlock(buffer);
-
+         
          if (bytes_written != buffer->length)
          {
             vcos_log_error("Failed to write buffer data (%d from %d)- aborting", bytes_written, buffer->length);
             pData->abort = 1;
          }
+
+         if(pData->pstate->send_data_to_stdout)
+         {
+            bytes_written = fwrite(buffer->data, 1, buffer->length, stdout);
+            
+            if (bytes_written != buffer->length)
+            {
+               vcos_log_error("Failed to write buffer data (%d from %d) to stdout - aborting", bytes_written, buffer->length);
+               pData->abort = 1;
+            }
+         }
+         
+         mmal_buffer_header_mem_unlock(buffer);
+
       }
    }
    else

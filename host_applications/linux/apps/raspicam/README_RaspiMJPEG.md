@@ -33,32 +33,17 @@ errror    --> An error occured and the application terminated
 
 
 Possible parameters:
--w    set MJPEG-image width
--h    set MJPEG-image height
--wp   set MJPEG-image width for image-preview
--hp   set MJPEG-image height for image-preview
--q    set MJPEG-image quality
--d    set MJPEG-image fps (fps=30/d)
--of   set MJPEG-image path
--cf   set control-pipe path
--if   set image output path
--vf   set video output path
--sf   set status file path
--p    box the video-capture (h264) into a mp4 after capturing (needs gpac installed)
 -ic   set the offset for image output numbering
 -vc   set the offset for video output numbering
--pa   start RaspiMJPEG in idle state
--md   start RaspiMJPEG with motion detection
--fp   start RaspiMJPEG in image mode
 
 
 Possible Pipe-Commands:
-pm    set preview mode (range:[4_3/16_9_STD/16_9_WIDE])
 ca 1  start video capture
 ca 0  stop video capture
 im    capture image
 tl    start timelapse, parameter is time between images in 1/10 seconds.
 tl 0  stop timelapse
+px    set video+img resolution/framerate (AAAA BBBB CC DD EEEE FFFF; video = AxB px, C fps, boxed with D fps, image = ExF px)
 sh    set sharpness (range: [-100;100]; default: 0)
 co    set contrast (range: [-100;100]; default: 0)
 br    set brightness (range: [0;100]; default: 50)
@@ -69,9 +54,16 @@ vs 0  turn off video stabilisation
 ec    set exposure compensation (range: [-10;10]; default: 0)
 em    set exposure mode (range: [off/auto/night/nightpreview/backlight/spotlight/sports/snow/beach/verylong/fixedfps/antishake/fireworks]; default: auto)
 wb    set white balance (range: [off/auto/sun/cloudy/shade/tungsten/fluorescent/incandescent/flash/horizon]; default: auto)
+mm    set metering mode (range: [average/spot/backlit/matrix]; default: average)
+ie    set image effect (range: [none/negative/solarise/posterize/whiteboard/blackboard/sketch/denoise/emboss/oilpaint/hatch/gpen/pastel/watercolour/film/blur/saturation/colourswap/washedout/posterise/colourpoint/colourbalance/cartoon]; default: none)
+ce    set colour effect (A BB CC; A=enable/disable, effect = B:C)
 ro    set rotation (range: [0/90/180/270]; default: 0)
+fl    set flip (range: [0;3]; default: 0)
+ri    set sensor region (AAAAA BBBBB CCCCC DDDDD, x=A, y=B, w=C, h=D)
 qu    set output image quality (range: [0;100]; default: 85)
 bi    set output video bitrate (range: [0;25000000]; default: 17000000)
+rl 0  disables raw layer
+rl 1  enables raw layer
 ru 0  halt RaspiMJPEG and release camera
 ru 1  restart mjpeg-stream
 md 1  start motion detection

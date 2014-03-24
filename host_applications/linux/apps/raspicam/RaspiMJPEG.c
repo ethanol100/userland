@@ -50,7 +50,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  * Usage information in README_RaspiMJPEG.md
  */
 
-#define VERSION "4.0"
+#define VERSION "4.1"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -93,7 +93,7 @@ void error (const char *string) {
   if(status_filename != 0) {
     status_file = fopen(status_filename, "w");
     if(status_file) {
-      fprintf(status_file, "error");
+      fprintf(status_file, "Error: %s", string);
       fclose(status_file);
     }
   }
@@ -575,16 +575,18 @@ void start_all (void) {
   //
   // create image-resizer
   //
+  unsigned int height_temp = (unsigned long int)width*video_height/video_width;
+  height_temp -= height_temp%16;
   status = mmal_component_create("vc.ril.resize", &resizer);
   if(status != MMAL_SUCCESS && status != MMAL_ENOSYS) error("Could not create image resizer");
   
   format = resizer->output[0]->format;
   format->es->video.width = width;
-  format->es->video.height = (unsigned long int)width*video_height/video_width;
+  format->es->video.height = height_temp;
   format->es->video.crop.x = 0;
   format->es->video.crop.y = 0;
   format->es->video.crop.width = width;
-  format->es->video.crop.height = (unsigned long int)width*video_height/video_width;
+  format->es->video.crop.height = height_temp;
   format->es->video.frame_rate.num = 30;
   format->es->video.frame_rate.den = 1;
   status = mmal_port_format_commit(resizer->output[0]);

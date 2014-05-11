@@ -115,6 +115,15 @@ const int ABORT_INTERVAL = 100; // ms
 int mmal_status_to_int(MMAL_STATUS_T status);
 static void signal_handler(int signal_number);
 
+// Struct for inline motion vectors
+// y_vector,x_vector,sad or x_vector,y_vector,sad
+typedef struct
+{
+   signed char y_vector;
+   signed char x_vector;
+   short sad;
+} INLINE_MOTION_VECTOR; 
+
 // Forward
 typedef struct RASPIVID_STATE_S RASPIVID_STATE;
 
@@ -123,6 +132,7 @@ typedef struct RASPIVID_STATE_S RASPIVID_STATE;
 typedef struct
 {
    FILE *file_handle;                   /// File handle to write buffer data to.
+   FILE *imv_file_handle;               /// File handle to write imv data to.
    RASPIVID_STATE *pstate;              /// pointer to our state in case required in callback
    int abort;                           /// Set to 1 in callback if an error occurs to attempt to abort the capture
    char *cb_buff;                       /// Circular buffer
@@ -182,6 +192,12 @@ struct RASPIVID_STATE_S
 
    int bCapturing;                     /// State of capture/pause
    int bCircularBuffer;                /// Whether we are writing to a circular buffer
+   int inlineMotionVectors;            /// Encoder outputs inline Motion Vectors
+   int imvMode;                        /// Output format: 0 binary, 1 text
+   char *imv_filename;                 /// filename of imv output file
+   int mbx;                            /// number of Macroblocks in x direction
+   int mby;                            /// number of Macroblocks in x direction
+   INLINE_MOTION_VECTOR *imv;          /// storage for inline motion vectors
 
 };
 
@@ -232,6 +248,8 @@ static void display_valid_parameters(char *app_name);
 #define CommandSegmentStart 20
 #define CommandSplitWait    21
 #define CommandCircular     22
+#define CommandIMV          23
+#define CommandIMVMode      24
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -258,6 +276,8 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandSegmentStart,  "-start",      "sn", "In segment mode, start with specified segment number", 1},
    { CommandSplitWait,     "-split",      "sp", "In wait mode, create new output file for each start event", 0},
    { CommandCircular,      "-circular",   "c",  "Run encoded data through circular buffer until triggered then save", 0},
+   { CommandIMV,           "-imv",        "imv",  "Output inline motion vectors", 1 },
+   { CommandIMVMode,       "-imvm",       "imvm", "Output inline motion vectors format", 1 },
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -314,6 +334,10 @@ static void default_status(RASPIVID_STATE *state)
 
    state->bCapturing = 0;
    state->bInlineHeaders = 0;
+   state->inlineMotionVectors = 0;
+   state->imvMode = 0;
+   state->mbx = 120; //some default values
+   state->mby = 68;
 
    state->segmentSize = 0;  // 0 = not segmenting the file.
    state->segmentNumber = 1;
@@ -636,6 +660,31 @@ static int parse_cmdline(int argc, const char **argv, RASPIVID_STATE *state)
          break;
       }
 
+      case CommandIMV:  // output filename
+      {
+         state->inlineMotionVectors = 1;
+         int len = strlen(argv[i + 1]);
+         if (len)
+         {
+            state->imv_filename = malloc(len + 1);
+            vcos_assert(state->imv_filename);
+            if (state->imv_filename)
+               strncpy(state->imv_filename, argv[i + 1], len+1);
+            i++;
+         }
+         else
+            valid = 0;
+         break;
+      }
+
+      case CommandIMVMode:  // output format
+      {
+         if (sscanf(argv[i + 1], "%u", &state->imvMode) == 1)
+            i++;
+         else
+            valid = 0;
+         break;
+      }
 
       default:
       {
@@ -773,6 +822,27 @@ static FILE *open_filename(RASPIVID_STATE *pState)
    return new_handle;
 }
 
+static FILE *open_filename2(RASPIVID_STATE *pState)
+{
+   FILE *new_handle = NULL;
+   char *filename = NULL;
+
+      filename = pState->imv_filename;
+
+   if (filename)
+      new_handle = fopen(filename, "wb");
+
+   if (pState->verbose)
+   {
+      if (new_handle)
+         fprintf(stderr, "Opening imv output file \"%s\"\n", filename);
+      else
+         fprintf(stderr, "Failed to open new imv output file \"%s\"\n", filename);
+   }
+   
+   return new_handle;
+}
+
 /**
  *  buffer header callback function for encoder
  *
@@ -800,6 +870,7 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
       int64_t current_time = vcos_getmicrosecs64()/1000;
 
       vcos_assert(pData->file_handle);
+      if(pData->pstate->inlineMotionVectors) vcos_assert(pData->imv_file_handle);
 
       if (pData->cb_buff)
       {
@@ -908,16 +979,40 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
          if (buffer->length)
          {
             mmal_buffer_header_mem_lock(buffer);
-
-            bytes_written = fwrite(buffer->data, 1, buffer->length, pData->file_handle);
-
-            mmal_buffer_header_mem_unlock(buffer);
-
-            if (bytes_written != buffer->length)
+            if((buffer->flags & MMAL_BUFFER_HEADER_FLAG_CODECSIDEINFO))
             {
-               vcos_log_error("Failed to write buffer data (%d from %d)- aborting", bytes_written, buffer->length);
-               pData->abort = 1;
+               if(pData->pstate->inlineMotionVectors) //ignore SEI user does not want inlineMotionVectors            
+               {
+                  if(pData->pstate->imvMode==0){
+                     //write binary data:
+                     bytes_written = fwrite(buffer->data, 1, buffer->length, pData->imv_file_handle);              
+                  }
+                  else{
+                     if(pData->pstate->imvMode==1){
+                        memcpy ( &pData->pstate->imv[0], &buffer->data[0], (pData->pstate->mbx+1)*pData->pstate->mby*sizeof(INLINE_MOTION_VECTOR) );
+                        int i,j;
+                        for(j=0;j<pData->pstate->mby; j++)
+                         for(i=0;i<pData->pstate->mbx; i++)
+                        {
+                           fprintf(pData->imv_file_handle,"%d %d %d %d %d\n",i,pData->pstate->mby-j,
+                              -pData->pstate->imv[i+(pData->pstate->mbx+1)*j].x_vector,
+                               pData->pstate->imv[i+(pData->pstate->mbx+1)*j].y_vector,
+                               pData->pstate->imv[i+(pData->pstate->mbx+1)*j].sad);
+                        }
+                     }
+                  } 
+               }
+            }  
+            else
+            {
+               bytes_written = fwrite(buffer->data, 1, buffer->length, pData->file_handle);
+               if (bytes_written != buffer->length)
+               {
+                  vcos_log_error("Failed to write buffer data (%d from %d)- aborting", bytes_written, buffer->length);
+                  pData->abort = 1;
+               }
             }
+            mmal_buffer_header_mem_unlock(buffer);
          }
       }
    }
@@ -1276,6 +1371,13 @@ static MMAL_STATUS_T create_encoder_component(RASPIVID_STATE *state)
    if (mmal_port_parameter_set_boolean(encoder_output, MMAL_PARAMETER_VIDEO_ENCODE_INLINE_HEADER, state->bInlineHeaders) != MMAL_SUCCESS)
    {
       vcos_log_error("failed to set INLINE HEADER FLAG parameters");
+      // Continue rather than abort..
+   }
+   
+   //set INLINE VECTORS flag to request motion vector estimates
+   if (mmal_port_parameter_set_boolean(encoder_output, MMAL_PARAMETER_VIDEO_ENCODE_INLINE_VECTORS, state->inlineMotionVectors) != MMAL_SUCCESS)
+   {
+      vcos_log_error("failed to set INLINE VECTORS parameters");
       // Continue rather than abort..
    }
 
@@ -1659,7 +1761,28 @@ int main(int argc, const char **argv)
                vcos_log_error("%s: Error opening output file: %s\nNo output file will be generated\n", __func__, state.filename);
             }
          }
-
+         if(state.inlineMotionVectors)
+         { 
+            state.callback_data.imv_file_handle = NULL;
+            if (state.imv_filename)
+            {
+              if (state.imv_filename[0] == '-')
+              {
+                 state.callback_data.imv_file_handle = stdout;
+              }
+              else
+              {
+                 state.callback_data.imv_file_handle = open_filename2(&state);
+              }
+  
+              if (!state.callback_data.imv_file_handle)
+              {
+                 // Notify user, carry on but discarding encoded output buffers
+                 vcos_log_error("%s: Error opening output file: %s\nNo output file will be generated\n", __func__, state.imv_filename);
+              }
+           }
+         }
+ 
          if(state.bCircularBuffer)
          {
             if(state.bitrate == 0)
@@ -1708,6 +1831,15 @@ int main(int argc, const char **argv)
          // Set up our userdata - this is passed though to the callback where we need the information.
          state.callback_data.pstate = &state;
          state.callback_data.abort = 0;
+
+         if(state.inlineMotionVectors && state.imvMode==1)
+         {
+            state.mbx=state.width/16; 
+            state.mby=state.height/16;
+            if(state.width%16!=0)state.mbx++;
+            if(state.height%16!=0)state.mby++;               
+            state.imv = malloc((state.mbx+1)*state.mby*sizeof(INLINE_MOTION_VECTOR));
+         }
 
          encoder_output_port->userdata = (struct MMAL_PORT_USERDATA_T *)&state.callback_data;
 
@@ -1847,6 +1979,11 @@ int main(int argc, const char **argv)
          fwrite(state.callback_data.cb_buff + state.callback_data.iframe_buff[state.callback_data.iframe_buff_rpos], 1, copy_from_end, state.callback_data.file_handle);
          fwrite(state.callback_data.cb_buff, 1, copy_from_start, state.callback_data.file_handle);
       }
+      
+      if(state.inlineMotionVectors && state.imvMode==1)
+      {
+         free(state.imv);
+      }
 
 error:
 
@@ -1869,6 +2006,9 @@ error:
       // problems if we have already closed the file!
       if (state.callback_data.file_handle && state.callback_data.file_handle != stdout)
          fclose(state.callback_data.file_handle);
+
+      if (state.callback_data.imv_file_handle && state.callback_data.imv_file_handle != stdout)
+         fclose(state.callback_data.imv_file_handle);
 
       /* Disable components */
       if (state.encoder_component)

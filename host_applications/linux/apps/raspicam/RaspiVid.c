@@ -55,6 +55,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string.h>
 #include <memory.h>
 #include <sysexits.h>
+#include <math.h> 
 
 #define VERSION_STRING "v1.3.11"
 
@@ -109,7 +110,8 @@ const int ABORT_INTERVAL = 100; // ms
 #define WAIT_METHOD_SIGNAL         3
 /// Run/record forever
 #define WAIT_METHOD_FOREVER        4
-
+/// Listen for internal change
+#define WAIT_METHOD_INTERNAL       5
 
 
 int mmal_status_to_int(MMAL_STATUS_T status);
@@ -119,8 +121,8 @@ static void signal_handler(int signal_number);
 // y_vector,x_vector,sad or x_vector,y_vector,sad
 typedef struct
 {
-   signed char y_vector;
    signed char x_vector;
+   signed char y_vector;
    short sad;
 } INLINE_MOTION_VECTOR; 
 
@@ -198,7 +200,12 @@ struct RASPIVID_STATE_S
    int mbx;                            /// number of Macroblocks in x direction
    int mby;                            /// number of Macroblocks in x direction
    INLINE_MOTION_VECTOR *imv;          /// storage for inline motion vectors
-
+   int triggerX;
+   int triggerY;
+   double triggerMag;
+   int MTrigger;
+   int Triggered;
+   double triggerFraction;
 };
 
 
@@ -250,6 +257,7 @@ static void display_valid_parameters(char *app_name);
 #define CommandCircular     22
 #define CommandIMV          23
 #define CommandIMVMode      24
+#define CommandTrigger      25
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -278,6 +286,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandCircular,      "-circular",   "c",  "Run encoded data through circular buffer until triggered then save", 0},
    { CommandIMV,           "-imv",        "imv",  "Output inline motion vectors", 1 },
    { CommandIMVMode,       "-imvm",       "imvm", "Output inline motion vectors format", 1 },
+   { CommandTrigger,"-trigger",    "trigger", "Trigger at x y with val magTrig(only circular buffer)", 1 },
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -294,6 +303,7 @@ static struct
       {"Cycle on time",          WAIT_METHOD_TIMED},
       {"Cycle on keypress",      WAIT_METHOD_KEYPRESS},
       {"Cycle on signal",        WAIT_METHOD_SIGNAL},
+      {"Stop on internal signal",        WAIT_METHOD_INTERNAL},
 };
 
 static int wait_method_description_size = sizeof(wait_method_description) / sizeof(wait_method_description[0]);
@@ -345,6 +355,13 @@ static void default_status(RASPIVID_STATE *state)
    state->splitNow = 0;
    state->splitWait = 0;
 
+   //Motion Trigger:
+   state->triggerX = 0;
+   state->triggerY = 0;
+   state->triggerMag = 0;
+   state->MTrigger = 0;
+   state->Triggered= 0;
+   state->triggerFraction = 0;
    // Setup preview window defaults
    raspipreview_set_defaults(&state->preview_parameters);
 
@@ -685,6 +702,30 @@ static int parse_cmdline(int argc, const char **argv, RASPIVID_STATE *state)
             valid = 0;
          break;
       }
+   
+      case CommandTrigger:
+      {
+         int x,y;
+         double u,frac;
+         int args;
+         args = sscanf(argv[i + 1], "%d,%d,%lf,%lf", &x,&y,&u,&frac);
+         i++;
+         if (args != 4 || x > 1920 || y > 1080 || u <= 0.0 || u>256 || frac<0 || frac >1)
+         {
+            valid = 0;
+         }
+         state->MTrigger=1;
+         state->triggerX = x;
+         state->triggerY = y;
+         state->triggerMag = u;
+         state->triggerFraction = frac; 
+         //need:
+         state->bCircularBuffer = 1;
+         state->inlineMotionVectors = 1;
+         state->imv_filename="/dev/null";//ok?
+         state->waitMethod = WAIT_METHOD_INTERNAL;
+         break;
+      }
 
       default:
       {
@@ -891,6 +932,25 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
                memcpy(pData->header_bytes + pData->header_wptr, buffer->data, buffer->length);
                mmal_buffer_header_mem_unlock(buffer);
                pData->header_wptr += buffer->length;
+            }
+         }
+         else if((buffer->flags & MMAL_BUFFER_HEADER_FLAG_CODECSIDEINFO))
+         {
+            if(pData->pstate->MTrigger)
+            {
+               //trigger using one point data:
+               //using coordinate input x,y and vel-magnitude
+               mmal_buffer_header_mem_lock(buffer);
+               signed char vx=0;
+               signed char vy=0;
+               memcpy(&vy, buffer->data+4*(pData->pstate->triggerX+(pData->pstate->mbx+1)*pData->pstate->triggerY), sizeof(signed char));
+               memcpy(&vx, buffer->data+4*(pData->pstate->triggerX+(pData->pstate->mbx+1)*pData->pstate->triggerY)+1, sizeof(signed char));
+               if(sqrt(vx*vx+vy*vy)>pData->pstate->triggerMag)
+               {
+                  pData->pstate->Triggered=1;
+               }
+               printf("%d %d %lf\n",vx,vy,sqrt(vx*vx+vy*vy)); 
+               mmal_buffer_header_mem_unlock(buffer);     
             }
          }
          else
@@ -1616,6 +1676,28 @@ static int wait_for_next_change(RASPIVID_STATE *state)
       return keep_running;
    }
 
+   case WAIT_METHOD_INTERNAL:
+   {
+
+      if (state->verbose)
+      {
+         fprintf(stderr, "Waiting for internal trigger\n");
+      }
+      int r=1;
+      while(r==1){
+         if(state->Triggered)
+         {
+            r=0;
+            vcos_sleep((1-state->triggerFraction)*state->timeout);
+         }
+         else
+         {
+            vcos_sleep(33);
+         }
+      }
+      return 0;
+   }
+
    } // switch
 
    return keep_running;
@@ -1795,7 +1877,7 @@ int main(int argc, const char **argv)
                vcos_log_error("%s: Error, circular buffer size is based on timeout must be greater than zero\n", __func__);
                goto error;
             }
-            else if(state.waitMethod != WAIT_METHOD_KEYPRESS && state.waitMethod != WAIT_METHOD_SIGNAL)
+            else if(state.waitMethod != WAIT_METHOD_KEYPRESS && state.waitMethod != WAIT_METHOD_SIGNAL &&  state.waitMethod != WAIT_METHOD_INTERNAL )
             {
                vcos_log_error("%s: Error, Circular buffer mode requires either keypress (-k) or signal (-s) triggering\n", __func__);
                goto error;
@@ -1839,6 +1921,21 @@ int main(int argc, const char **argv)
             if(state.width%16!=0)state.mbx++;
             if(state.height%16!=0)state.mby++;               
             state.imv = malloc((state.mbx+1)*state.mby*sizeof(INLINE_MOTION_VECTOR));
+         }
+
+         if(state.MTrigger)
+         {
+            int tmpx=state.triggerX/16; 
+            int tmpy=state.triggerY/16;
+            if(tmpx<state.mbx && tmpx<state.mbx)
+            {  
+               state.triggerX=tmpx;
+               state.triggerY=tmpy;
+            }
+            else
+            {
+             state.MTrigger=0;
+            }
          }
 
          encoder_output_port->userdata = (struct MMAL_PORT_USERDATA_T *)&state.callback_data;

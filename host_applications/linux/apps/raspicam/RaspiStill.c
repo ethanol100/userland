@@ -149,7 +149,9 @@ typedef struct
    MMAL_POOL_T *encoder_pool; /// Pointer to the pool of buffers used by encoder output port
 
    RASPITEX_STATE raspitex_state; /// GL renderer state and parameters
-
+   int waitAndFix;
+   int fixWait;
+   int waitMethodAfterFix;
 } RASPISTILL_STATE;
 
 /** Struct used to pass information in encoder port userdata to callback
@@ -184,7 +186,7 @@ static void store_exif_tag(RASPISTILL_STATE *state, const char *exif_tag);
 #define CommandSignal       16
 #define CommandGL           17
 #define CommandGLCapture    18
-
+#define CommandWaitAndFix   19
 static COMMAND_LIST cmdline_commands[] =
 {
    { CommandHelp,    "-help",       "?",  "This help information", 0 },
@@ -206,6 +208,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandSignal,  "-signal",     "s",  "Wait between captures for a SIGUSR1 from another process", 0},
    { CommandGL,      "-gl",         "g",  "Draw preview to texture instead of using video render component", 0},
    { CommandGLCapture, "-glcapture","gc", "Capture the GL frame-buffer instead of the camera image", 0},
+   { CommandWaitAndFix,"-waitAndFix","waf","Wait <t>ms before capture, fix AGC afterwards", 1},
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -281,7 +284,9 @@ static void default_status(RASPISTILL_STATE *state)
    state->frameNextMethod = FRAME_NEXT_SINGLE;
    state->useGL = 0;
    state->glCapture = 0;
-
+   state->waitAndFix = 0;
+   state->fixWait = 0;
+   state->waitMethodAfterFix = 0;
    // Setup preview window defaults
    raspipreview_set_defaults(&state->preview_parameters);
 
@@ -475,7 +480,8 @@ static int parse_cmdline(int argc, const char **argv, RASPISTILL_STATE *state)
          if (sscanf(argv[i + 1], "%u", &state->timeout) == 1)
          {
             // Ensure that if previously selected CommandKeypress we don't overwrite it
-            if (state->timeout == 0 && state->frameNextMethod != FRAME_NEXT_KEYPRESS)
+            if (state->timeout == 0 && state->frameNextMethod != FRAME_NEXT_KEYPRESS && 
+                state->frameNextMethod != FRAME_NEXT_SIGNAL)
                state->frameNextMethod = FRAME_NEXT_FOREVER;
 
             i++;
@@ -591,6 +597,16 @@ static int parse_cmdline(int argc, const char **argv, RASPISTILL_STATE *state)
 
       case CommandGLCapture:
          state->glCapture = 1;
+         break;
+
+      case CommandWaitAndFix:
+         if (sscanf(argv[i + 1], "%u", &state->fixWait) != 1)
+            valid = 0;
+         else
+         {
+            state->waitAndFix=1;
+            i++;
+         }
          break;
 
       default:
@@ -1306,7 +1322,15 @@ static int wait_for_next_frame(RASPISTILL_STATE *state, int *frame)
    int64_t current_time =  vcos_getmicrosecs64()/1000;
 
    if (complete_time == -1)
-      complete_time =  current_time + state->timeout;
+   {
+      if(state->waitAndFix)
+      {
+         complete_time =  current_time + state->timeout + state->fixWait;
+      }
+      else{
+         complete_time =  current_time + state->timeout;      
+      }
+   }
 
    // if we have run out of time, flag we need to exit
    // If timeout = 0 then always continue
@@ -1627,6 +1651,16 @@ int main(int argc, const char **argv)
          if (state.useGL && (raspitex_start(&state.raspitex_state) != 0))
             goto error;
 
+         /* if we want waitAndFix */
+         if(state.waitAndFix)
+         {
+            int tmp=state.timeout;
+            state.timeout=state.fixWait;
+            state.fixWait=tmp;
+            state.waitMethodAfterFix = state.frameNextMethod;
+            state.frameNextMethod = FRAME_NEXT_SINGLE;
+         }
+         
          if (status != MMAL_SUCCESS)
          {
             vcos_log_error("Failed to setup encoder output");
@@ -1656,6 +1690,27 @@ int main(int argc, const char **argv)
             while (keep_looping)
             {
             	keep_looping = wait_for_next_frame(&state, &frame);
+                /* if we want waitAndFix */
+                if(state.waitAndFix && frame==0)
+                {
+                   int tmp=state.timeout;
+                   state.timeout=state.fixWait;
+                   state.fixWait=tmp;
+                   state.frameNextMethod=state.waitMethodAfterFix;
+
+                   MMAL_PARAMETER_EXPOSUREMODE_T exp_mode = {{MMAL_PARAMETER_EXPOSURE_MODE,sizeof(exp_mode)}, MMAL_PARAM_EXPOSUREMODE_OFF};
+                   if(mmal_port_parameter_set(state.camera_component->control, &exp_mode.hdr) == MMAL_SUCCESS )
+                   {
+                      if (state.verbose)
+                         fprintf(stderr, "Switching to timelapse or signal mode\n");
+                      keep_looping=1;
+                   }
+                   else
+                   {
+                      if (state.verbose)
+                         fprintf(stderr, "Failed switching to timelapse or signal mode\n"); 
+                   }
+                }
 
                // Open the file
                if (state.filename)

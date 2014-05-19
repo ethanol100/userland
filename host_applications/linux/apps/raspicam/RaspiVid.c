@@ -186,7 +186,11 @@ struct RASPIVID_STATE_S
 
    int inlineMotionVectors;             /// Encoder outputs inline Motion Vectors
    char *imv_filename;                  /// filename of inline Motion Vectors output
-
+   
+   int waitAndFix;
+   int fixWait;
+   int waitMethodAfterFix;
+   int bCapturingAfterFix;
 };
 
 
@@ -237,6 +241,7 @@ static void display_valid_parameters(char *app_name);
 #define CommandSplitWait    21
 #define CommandCircular     22
 #define CommandIMV          23
+#define CommandWaitAndFix   24
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -264,6 +269,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandSplitWait,     "-split",      "sp", "In wait mode, create new output file for each start event", 0},
    { CommandCircular,      "-circular",   "c",  "Run encoded data through circular buffer until triggered then save", 0},
    { CommandIMV,           "-vectors",    "x",  "Output filename <filename> for inline motion vectors", 1 },
+   { CommandWaitAndFix,    "-waitAndFix", "waf","Wait <t>ms before capture, fix AGC afterwards", 1},
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -327,6 +333,10 @@ static void default_status(RASPIVID_STATE *state)
    state->splitNow = 0;
    state->splitWait = 0;
 
+   state->waitAndFix = 0;
+   state->fixWait = 0;
+   state->waitMethodAfterFix = 0;
+   
    state->inlineMotionVectors = 0;
 
    // Setup preview window defaults
@@ -660,6 +670,17 @@ static int parse_cmdline(int argc, const char **argv, RASPIVID_STATE *state)
             valid = 0;
          break;
       }
+
+      case CommandWaitAndFix:
+         if (sscanf(argv[i + 1], "%u", &state->fixWait) != 1)
+            valid = 0;
+         else
+         {
+            state->waitAndFix=1;
+            i++;
+         }
+         break;
+
 
       default:
       {
@@ -1534,7 +1555,15 @@ static int wait_for_next_change(RASPIVID_STATE *state)
    int64_t current_time =  vcos_getmicrosecs64()/1000;
 
    if (complete_time == -1)
-      complete_time =  current_time + state->timeout;
+   {
+      if(state->waitAndFix)
+      {
+         complete_time =  current_time + state->timeout + state->fixWait;
+      }
+      else{
+         complete_time =  current_time + state->timeout;      
+      }
+   }
 
    // if we have run out of time, flag we need to exit
    if (current_time >= complete_time && state->timeout != 0)
@@ -1836,6 +1865,18 @@ int main(int argc, const char **argv)
          // Enable the encoder output port and tell it its callback function
          status = mmal_port_enable(encoder_output_port, encoder_buffer_callback);
 
+         /* if we want waitAndFix */
+         if(state.waitAndFix)
+         {
+            int tmp=state.timeout;
+            state.timeout=state.fixWait;
+            state.fixWait=tmp;
+            state.waitMethodAfterFix = state.waitMethod;
+            state.waitMethod = WAIT_METHOD_NONE;
+            state.bCapturingAfterFix = state.bCapturing;
+            state.bCapturing = 1;
+         }
+         
          if (status != MMAL_SUCCESS)
          {
             vcos_log_error("Failed to setup encoder output");
@@ -1894,7 +1935,7 @@ int main(int argc, const char **argv)
                   }
 
                   // In circular buffer mode, exit and save the buffer (make sure we do this after having paused the capture
-                  if(state.bCircularBuffer && !state.bCapturing)
+                  if(state.bCircularBuffer && !state.bCapturing && state.waitAndFix!=1)
                   {
                      break;
                   }
@@ -1924,6 +1965,30 @@ int main(int argc, const char **argv)
                      initialCapturing=0;
                   }
                   running = wait_for_next_change(&state);
+                  /* if we want waitAndFix */
+                  if(state.waitAndFix==1)
+                  {
+                     state.waitAndFix++;
+                     int tmp=state.timeout;
+                     state.timeout=state.fixWait;
+                     state.fixWait=tmp;
+                     state.waitMethod=state.waitMethodAfterFix;
+                     state.bCapturing = state.bCapturingAfterFix;
+
+                     MMAL_PARAMETER_EXPOSUREMODE_T exp_mode = {{MMAL_PARAMETER_EXPOSURE_MODE,sizeof(exp_mode)}, MMAL_PARAM_EXPOSUREMODE_OFF};
+                     if(mmal_port_parameter_set(state.camera_component->control, &exp_mode.hdr) == MMAL_SUCCESS )
+                     {
+                        if (state.verbose)
+                           fprintf(stderr, "Finish auto exposure continue with EXPOSUREMODE_OFF\n");
+                        running=1;
+                     }
+                     else
+                     {
+                        if (state.verbose)
+                            fprintf(stderr, "Failed to set EXPOSUREMODE_OFF\n"); 
+                     }
+                   }
+
                }
 
                if (state.verbose)

@@ -133,6 +133,7 @@ typedef struct
    int enableExifTags;                 /// Enable/Disable EXIF tags in output
    int timelapse;                      /// Delay between each picture in timelapse mode. If 0, disable timelapse
    int fullResPreview;                 /// If set, the camera preview port runs at capture resolution. Reduces fps.
+   int previewFPS;                     /// Set fps of preview
    int frameNextMethod;                /// Which method to use to advance to next frame
    int useGL;                          /// Render preview using OpenGL
    int glCapture;                      /// Save the GL frame-buffer instead of camera output
@@ -184,6 +185,7 @@ static void store_exif_tag(RASPISTILL_STATE *state, const char *exif_tag);
 #define CommandSignal       16
 #define CommandGL           17
 #define CommandGLCapture    18
+#define CommandPreviewFPS   19
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -206,6 +208,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandSignal,  "-signal",     "s",  "Wait between captures for a SIGUSR1 from another process", 0},
    { CommandGL,      "-gl",         "g",  "Draw preview to texture instead of using video render component", 0},
    { CommandGLCapture, "-glcapture","gc", "Capture the GL frame-buffer instead of the camera image", 0},
+   { CommandPreviewFPS, "-pfps",  "pfps", "Set Preview fps", 1 },
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -278,6 +281,7 @@ static void default_status(RASPISTILL_STATE *state)
    state->enableExifTags = 1;
    state->timelapse = 0;
    state->fullResPreview = 0;
+   state->previewFPS = 0;
    state->frameNextMethod = FRAME_NEXT_SINGLE;
    state->useGL = 0;
    state->glCapture = 0;
@@ -593,6 +597,21 @@ static int parse_cmdline(int argc, const char **argv, RASPISTILL_STATE *state)
          state->glCapture = 1;
          break;
 
+      case CommandPreviewFPS:
+         if (sscanf(argv[i + 1], "%u", &state->previewFPS) == 1)
+         {
+            if (state->previewFPS > 90)
+            {
+               fprintf(stderr, "Setting max preview fps = 90\n");
+               state->previewFPS = 90;
+            }
+            
+            i++;
+         }
+         else
+            valid = 0;
+         break;
+         
       default:
       {
          // Try parsing for any image specific parameters
@@ -851,8 +870,16 @@ static MMAL_STATUS_T create_camera_component(RASPISTILL_STATE *state)
       format->es->video.crop.y = 0;
       format->es->video.crop.width = state->width;
       format->es->video.crop.height = state->height;
-      format->es->video.frame_rate.num = FULL_RES_PREVIEW_FRAME_RATE_NUM;
-      format->es->video.frame_rate.den = FULL_RES_PREVIEW_FRAME_RATE_DEN;
+      if(state->previewFPS)
+      {
+         format->es->video.frame_rate.num = state->previewFPS;
+         format->es->video.frame_rate.den = FULL_RES_PREVIEW_FRAME_RATE_DEN;
+      }
+      else
+      {
+         format->es->video.frame_rate.num = FULL_RES_PREVIEW_FRAME_RATE_NUM;
+         format->es->video.frame_rate.den = FULL_RES_PREVIEW_FRAME_RATE_DEN;
+      }
    }
    else
    {
@@ -863,8 +890,16 @@ static MMAL_STATUS_T create_camera_component(RASPISTILL_STATE *state)
       format->es->video.crop.y = 0;
       format->es->video.crop.width = state->preview_parameters.previewWindow.width;
       format->es->video.crop.height = state->preview_parameters.previewWindow.height;
-      format->es->video.frame_rate.num = PREVIEW_FRAME_RATE_NUM;
-      format->es->video.frame_rate.den = PREVIEW_FRAME_RATE_DEN;
+      if(state->previewFPS)
+      {
+         format->es->video.frame_rate.num = state->previewFPS;
+         format->es->video.frame_rate.den = PREVIEW_FRAME_RATE_DEN;
+      }
+      else
+      {
+         format->es->video.frame_rate.num = PREVIEW_FRAME_RATE_NUM;
+         format->es->video.frame_rate.den = PREVIEW_FRAME_RATE_DEN;
+      }
    }
 
    status = mmal_port_format_commit(preview_port);

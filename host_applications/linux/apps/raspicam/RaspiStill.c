@@ -150,7 +150,7 @@ typedef struct
    MMAL_POOL_T *encoder_pool; /// Pointer to the pool of buffers used by encoder output port
 
    RASPITEX_STATE raspitex_state; /// GL renderer state and parameters
-
+   int burstCaptureMode;          /// Enable burst mode
 } RASPISTILL_STATE;
 
 /** Struct used to pass information in encoder port userdata to callback
@@ -186,6 +186,7 @@ static void store_exif_tag(RASPISTILL_STATE *state, const char *exif_tag);
 #define CommandGL           17
 #define CommandGLCapture    18
 #define CommandSettings     19
+#define CommandBurstMode    20
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -209,6 +210,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandGL,      "-gl",         "g",  "Draw preview to texture instead of using video render component", 0},
    { CommandGLCapture, "-glcapture","gc", "Capture the GL frame-buffer instead of the camera image", 0},
    { CommandSettings, "-settings",  "set","Retrieve camera settings and write to stdout", 0},
+   { CommandBurstMode, "-burst",    "bm", "Enable 'burst capture mode'", 0},   
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -285,6 +287,7 @@ static void default_status(RASPISTILL_STATE *state)
    state->useGL = 0;
    state->glCapture = 0;
    state->settings = 0;
+   state->burstCaptureMode=0;
 
    // Setup preview window defaults
    raspipreview_set_defaults(&state->preview_parameters);
@@ -600,7 +603,11 @@ static int parse_cmdline(int argc, const char **argv, RASPISTILL_STATE *state)
       case CommandSettings:
          state->settings = 1;
          break;
-
+         
+      case CommandBurstMode: 
+         state->burstCaptureMode=1;
+         break;
+                        
       default:
       {
          // Try parsing for any image specific parameters
@@ -867,7 +874,12 @@ static MMAL_STATUS_T create_camera_component(RASPISTILL_STATE *state)
 
       mmal_port_parameter_set(camera->control, &cam_config.hdr);
    }
-
+   
+   if (state->burstCaptureMode)
+   {
+      mmal_port_parameter_set_boolean(camera->control,  MMAL_PARAMETER_CAMERA_BURST_CAPTURE, 1);
+   }
+               
    raspicamcontrol_set_all_parameters(camera, &state->camera_parameters);
 
    // Now set up the port formats

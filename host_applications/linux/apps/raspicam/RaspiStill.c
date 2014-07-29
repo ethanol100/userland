@@ -78,9 +78,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <semaphore.h>
 
-/// Camera number to use - we only have one camera, indexed from 0.
-#define CAMERA_NUMBER 0
-
 // Standard port setting for the camera component
 #define MMAL_CAMERA_PREVIEW_PORT 0
 #define MMAL_CAMERA_VIDEO_PORT 1
@@ -137,6 +134,7 @@ typedef struct
    int useGL;                          /// Render preview using OpenGL
    int glCapture;                      /// Save the GL frame-buffer instead of camera output
    int settings;                       /// Request settings from the camera
+   int cameraNum;                      /// Camera number
 
    RASPIPREVIEW_PARAMETERS preview_parameters;    /// Preview setup parameters
    RASPICAM_CAMERA_PARAMETERS camera_parameters; /// Camera setup parameters
@@ -187,6 +185,7 @@ static void store_exif_tag(RASPISTILL_STATE *state, const char *exif_tag);
 #define CommandGLCapture    18
 #define CommandSettings     19
 #define CommandBurstMode    20
+#define CommandCamSelect    21
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -211,6 +210,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandGLCapture, "-glcapture","gc", "Capture the GL frame-buffer instead of the camera image", 0},
    { CommandSettings, "-settings",  "set","Retrieve camera settings and write to stdout", 0},
    { CommandBurstMode, "-burst",    "bm", "Enable 'burst capture mode'", 0},   
+   { CommandCamSelect, "-camselect","cs", "Select camera <number>. Default 0", 1 },
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -288,6 +288,7 @@ static void default_status(RASPISTILL_STATE *state)
    state->glCapture = 0;
    state->settings = 0;
    state->burstCaptureMode=0;
+   state->cameraNum = 0;
 
    // Setup preview window defaults
    raspipreview_set_defaults(&state->preview_parameters);
@@ -603,11 +604,22 @@ static int parse_cmdline(int argc, const char **argv, RASPISTILL_STATE *state)
       case CommandSettings:
          state->settings = 1;
          break;
-         
+
       case CommandBurstMode: 
          state->burstCaptureMode=1;
          break;
-                        
+         
+      case CommandCamSelect:  //Select camera input port
+      {
+         if (sscanf(argv[i + 1], "%u", &state->cameraNum) == 1)
+         {
+            i++;
+         }
+         else
+            valid = 0;
+         break;
+      }
+
       default:
       {
          // Try parsing for any image specific parameters
@@ -813,6 +825,17 @@ static MMAL_STATUS_T create_camera_component(RASPISTILL_STATE *state)
    if (status != MMAL_SUCCESS)
    {
       vcos_log_error("Failed to create camera component");
+      goto error;
+   }
+
+   MMAL_PARAMETER_INT32_T camera_num =
+      {{MMAL_PARAMETER_CAMERA_NUM, sizeof(camera_num)}, state->cameraNum};
+
+   status = mmal_port_parameter_set(camera->control, &camera_num.hdr);
+
+   if (status != MMAL_SUCCESS)
+   {
+      vcos_log_error("Could not select camera : error %d", status);
       goto error;
    }
 

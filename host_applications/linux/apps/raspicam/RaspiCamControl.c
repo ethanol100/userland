@@ -143,6 +143,15 @@ static const int drc_mode_map_size = sizeof(drc_mode_map)/sizeof(drc_mode_map[0]
 #define CommandShutterSpeed 16
 #define CommandAwbGains    17
 #define CommandDRCLevel    18
+#define CommandAText       19
+#define CommandAShutter    20
+#define CommandAAnalogGain 21
+#define CommandALens       22
+#define CommandACaf        23
+#define CommandAMotion     24
+#define CommandVDenoise    25
+#define CommandSDenoise    26
+
 
 static COMMAND_LIST  cmdline_commands[] =
 {
@@ -164,7 +173,15 @@ static COMMAND_LIST  cmdline_commands[] =
    {CommandROI,         "-roi",       "roi","Set region of interest (x,y,w,d as normalised coordinates [0.0-1.0])", 1},
    {CommandShutterSpeed,"-shutter",   "ss", "Set shutter speed in microseconds", 1},
    {CommandAwbGains,    "-awbgains",  "awbg", "Set AWB gains - AWB mode must be off", 1},
-   {CommandDRCLevel,    "-drc",       "drc", "Set DRC Level", 1}
+   {CommandDRCLevel,    "-drc",       "drc", "Set DRC Level", 1},
+   {CommandAText,       "-anno-text", "ant", "Set annotation text(<32)", 1},
+   {CommandAShutter,    "-anno-ss",   "ans", "Annotate Shutter", 0},
+   {CommandAAnalogGain, "-anno-ag",   "ana", "Annotate Analog gain", 0},
+   {CommandALens,       "-anno-lens", "anl", "Annotate lens", 0},
+   {CommandACaf,        "-anno-caf",  "anc", "Annotate caf", 0},
+   {CommandAMotion,     "-anno-mo",   "anm", "Annotate Motion", 0},
+   {CommandVDenoise,    "-noVideoDenoise",     "nvd", "Disable video denoise", 0},
+   {CommandSDenoise,    "-noStillsDenoise",     "nsd", "Disable stills denoise", 0},
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -637,6 +654,71 @@ int raspicamcontrol_parse_cmdline(RASPICAM_CAMERA_PARAMETERS *params, const char
       break;
    }
 
+   case CommandAText:
+   {
+      if((unsigned)strlen(arg2)<MMAL_CAMERA_ANNOTATE_MAX_TEXT_LEN)
+      {
+         strcpy(params->annotations.text, arg2);
+         params->annotations.enable = 1;
+      }
+      else
+      {
+         fprintf(stderr,"Annotation text longer then 31, ignoring...\n");
+      }
+      used = 2;
+      break;
+   }
+
+   case CommandAShutter:
+   {
+      params->annotations.show_shutter = 1;
+      params->annotations.enable = 1;
+      used = 1;
+      break;
+   }
+
+   case CommandAAnalogGain:
+   {
+      params->annotations.show_analog_gain = 1;
+      params->annotations.enable = 1;
+      used = 1;
+      break;
+   }
+
+   case CommandALens:
+   {
+      params->annotations.show_lens = 1;
+      params->annotations.enable = 1;
+      used = 1;
+      break;
+   }
+
+   case CommandACaf:
+   {
+      params->annotations.show_caf = 1;
+      params->annotations.enable = 1;
+      used = 1;
+      break;
+   }
+
+   case CommandAMotion:
+   {
+      params->annotations.show_motion = 1;
+      params->annotations.enable = 1;
+      used = 1;
+      break;
+   }
+
+   case CommandVDenoise :
+      params->videoDenoise = 0;
+      used = 1;
+      break;
+
+   case CommandSDenoise :
+      params->stillsDenoise = 0;
+      used = 1;
+      break;
+
    }
 
    return used;
@@ -779,6 +861,15 @@ void raspicamcontrol_set_defaults(RASPICAM_CAMERA_PARAMETERS *params)
    params->awb_gains_r = 0;      // Only have any function if AWB OFF is used.
    params->awb_gains_b = 0;
    params->drc_level = MMAL_PARAMETER_DRC_STRENGTH_OFF;
+   params->annotations.enable = 0;
+   memset(&params->annotations.text[0], 0, sizeof(params->annotations.text));
+   params->annotations.show_shutter = 0;
+   params->annotations.show_analog_gain = 0;
+   params->annotations.show_lens = 0;
+   params->annotations.show_caf = 0;
+   params->annotations.show_motion = 0;
+   params->videoDenoise = 1;
+   params->stillsDenoise = 1;
 }
 
 /**
@@ -841,6 +932,9 @@ int raspicamcontrol_set_all_parameters(MMAL_COMPONENT_T *camera, const RASPICAM_
    result += raspicamcontrol_set_ROI(camera, params->roi);
    result += raspicamcontrol_set_shutter_speed(camera, params->shutter_speed);
    result += raspicamcontrol_set_DRC(camera, params->drc_level);
+   result += raspicamcontrol_set_annotate(camera, &params->annotations);
+   result += raspicamcontrol_set_video_denoise(camera, params->videoDenoise);
+   result += raspicamcontrol_set_stills_denoise(camera, params->stillsDenoise);
 
    return result;
 }
@@ -1252,6 +1346,52 @@ int raspicamcontrol_set_DRC(MMAL_COMPONENT_T *camera, MMAL_PARAMETER_DRC_STRENGT
       return 1;
 
    return mmal_status_to_int(mmal_port_parameter_set(camera->control, &drc.hdr));
+}
+
+int raspicamcontrol_set_annotate(MMAL_COMPONENT_T *camera, const MMAL_PARAMETER_CAMERA_ANNOTATE_T *annotations)
+{
+   MMAL_PARAMETER_CAMERA_ANNOTATE_T anno = {{MMAL_PARAMETER_ANNOTATE, sizeof(MMAL_PARAMETER_CAMERA_ANNOTATE_T)}};
+
+   if (!camera)
+      return 1;
+
+   anno.enable = annotations->enable;
+   strcpy(anno.text,annotations->text);
+   anno.show_shutter = annotations->show_shutter;
+   anno.show_analog_gain = annotations->show_analog_gain;
+   anno.show_lens = annotations->show_lens;
+   anno.show_caf = annotations->show_caf;
+   anno.show_motion = annotations->show_motion;
+   
+   return mmal_status_to_int(mmal_port_parameter_set(camera->control, &anno.hdr));
+}
+
+/**
+ * Set the disable video denoise flag. Only used in video mode
+ * @param camera Pointer to camera component
+ * @param disabled Flag 0 off 1 on
+ * @return 0 if successful, non-zero if any parameters out of range
+ */
+int raspicamcontrol_set_video_denoise(MMAL_COMPONENT_T *camera, int videoDenoise)
+{
+   if (!camera)
+      return 1;
+
+   return mmal_status_to_int(mmal_port_parameter_set_boolean(camera->control, MMAL_PARAMETER_VIDEO_DENOISE, videoDenoise));
+}
+
+/**
+ * Set the disable stills denoise flag. Only used in stills mode
+ * @param camera Pointer to camera component
+ * @param disabled Flag 0 off 1 on
+ * @return 0 if successful, non-zero if any parameters out of range
+ */
+int raspicamcontrol_set_stills_denoise(MMAL_COMPONENT_T *camera, int stillsDenoise)
+{
+   if (!camera)
+      return 1;
+
+   return mmal_status_to_int(mmal_port_parameter_set_boolean(camera->control, MMAL_PARAMETER_STILLS_DENOISE, stillsDenoise));
 }
 
 

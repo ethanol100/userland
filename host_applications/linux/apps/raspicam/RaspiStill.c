@@ -136,7 +136,7 @@ typedef struct
    int settings;                       /// Request settings from the camera
    int cameraNum;                      /// Camera number
    int burstCaptureMode;               /// Enable burst mode
-
+   int annoDate;                       /// Annotate date
    RASPIPREVIEW_PARAMETERS preview_parameters;    /// Preview setup parameters
    RASPICAM_CAMERA_PARAMETERS camera_parameters; /// Camera setup parameters
 
@@ -187,7 +187,7 @@ static void store_exif_tag(RASPISTILL_STATE *state, const char *exif_tag);
 #define CommandSettings     19
 #define CommandCamSelect    20
 #define CommandBurstMode    21
-
+#define CommandAnnotateDate 22
 static COMMAND_LIST cmdline_commands[] =
 {
    { CommandHelp,    "-help",       "?",  "This help information", 0 },
@@ -212,6 +212,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandSettings, "-settings",  "set","Retrieve camera settings and write to stdout", 0},
    { CommandCamSelect, "-camselect","cs", "Select camera <number>. Default 0", 1 },
    { CommandBurstMode, "-burst",    "bm", "Enable 'burst capture mode'", 0},   
+   { CommandAnnotateDate, "-anno-date",    "and", "Annotate each image with date", 0},   
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -289,8 +290,8 @@ static void default_status(RASPISTILL_STATE *state)
    state->glCapture = 0;
    state->settings = 0;
    state->cameraNum = 0;
-   state->burstCaptureMode=0;
-
+   state->burstCaptureMode = 0;
+   state->annoDate = 0;
    // Setup preview window defaults
    raspipreview_set_defaults(&state->preview_parameters);
 
@@ -619,9 +620,13 @@ static int parse_cmdline(int argc, const char **argv, RASPISTILL_STATE *state)
       }
 
       case CommandBurstMode: 
-         state->burstCaptureMode=1;
+         state->burstCaptureMode = 1;
          break;
-
+      
+      case CommandAnnotateDate:
+         state->annoDate = 1;
+         break;
+         
       default:
       {
          // Try parsing for any image specific parameters
@@ -1293,6 +1298,38 @@ static void store_exif_tag(RASPISTILL_STATE *state, const char *exif_tag)
    }
 }
 
+
+/**
+ * Add a date annotation
+ *
+ * @param state Pointer to state control struct
+ *
+ */
+static void add_data_annotation(RASPISTILL_STATE *state)
+{
+   time_t rawtime;
+   struct tm *timeinfo;
+   char time_buf[32];
+
+   time(&rawtime);
+   timeinfo = localtime(&rawtime);
+
+   snprintf(state->camera_parameters.annotations.text, sizeof(time_buf),
+            "%02d:%02d:%02d %02d.%02d.%04d",
+            timeinfo->tm_hour,
+            timeinfo->tm_min,
+            timeinfo->tm_sec,
+            timeinfo->tm_mday,
+            timeinfo->tm_mon+1,
+            timeinfo->tm_year+1900            
+            );
+
+  state->camera_parameters.annotations.enable = 1;
+  if (raspicamcontrol_set_annotate(state->camera_component, &state->camera_parameters.annotations) != MMAL_SUCCESS)
+  {
+     fprintf(stderr, "Unable to set annotations\n");  
+  }
+}
 /**
  * Connect two specific ports together
  *
@@ -1808,7 +1845,11 @@ int main(int argc, const char **argv)
                      mmal_port_parameter_set_boolean(
                         state.encoder_component->output[0], MMAL_PARAMETER_EXIF_DISABLE, 1);
                   }
-
+                  
+                  if( state.annoDate )
+                  {
+                     add_data_annotation(&state);
+                  }
                   // Same with raw, apparently need to set it for each capture, whilst port
                   // is not enabled
                   if (state.wantRAW)

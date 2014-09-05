@@ -886,6 +886,8 @@ void raspicamcontrol_set_defaults(RASPICAM_CAMERA_PARAMETERS *params)
    params->annotations.show_lens = 0;
    params->annotations.show_caf = 0;
    params->annotations.show_motion = 0;
+   params->annotations.show_frame_num = 0;
+   params->annotations.black_text_background = 0;
    params->videoDenoise = 1;
    params->stillsDenoise = 1;
 }

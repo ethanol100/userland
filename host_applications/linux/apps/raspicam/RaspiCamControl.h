@@ -133,7 +133,7 @@ typedef struct
    float awb_gains_r;         /// AWB red gain
    float awb_gains_b;         /// AWB blue gain
    MMAL_PARAMETER_DRC_STRENGTH_T drc_level;  // Strength of Dynamic Range compression to apply
-   MMAL_PARAMETER_CAMERA_ANNOTATE_T annotations; //Configure annotations
+   MMAL_PARAMETER_CAMERA_ANNOTATE_V2_T annotations; //Configure annotations
    int videoDenoise;          /// software denoise for video
    int stillsDenoise;         /// software denoise for stills
 } RASPICAM_CAMERA_PARAMETERS;

@@ -151,6 +151,8 @@ static const int drc_mode_map_size = sizeof(drc_mode_map)/sizeof(drc_mode_map[0]
 #define CommandAMotion     24
 #define CommandVDenoise    25
 #define CommandSDenoise    26
+#define CommandAFrame      27
+#define CommandABackground 28
 
 
 static COMMAND_LIST  cmdline_commands[] =
@@ -174,7 +176,7 @@ static COMMAND_LIST  cmdline_commands[] =
    {CommandShutterSpeed,"-shutter",   "ss", "Set shutter speed in microseconds", 1},
    {CommandAwbGains,    "-awbgains",  "awbg", "Set AWB gains - AWB mode must be off", 1},
    {CommandDRCLevel,    "-drc",       "drc", "Set DRC Level", 1},
-   {CommandAText,       "-anno-text", "ant", "Set annotation text(<32)", 1},
+   {CommandAText,       "-anno-text", "ant", "Set annotation text(<256)", 1},
    {CommandAShutter,    "-anno-ss",   "ans", "Annotate Shutter", 0},
    {CommandAAnalogGain, "-anno-ag",   "ana", "Annotate Analog gain", 0},
    {CommandALens,       "-anno-lens", "anl", "Annotate lens", 0},
@@ -182,6 +184,8 @@ static COMMAND_LIST  cmdline_commands[] =
    {CommandAMotion,     "-anno-mo",   "anm", "Annotate Motion", 0},
    {CommandVDenoise,    "-noVideoDenoise",     "nvd", "Disable video denoise", 0},
    {CommandSDenoise,    "-noStillsDenoise",     "nsd", "Disable stills denoise", 0},
+   {CommandAFrame,      "-anno-fr",   "anf", "Annotate Frame Number", 0},
+   {CommandABackground, "-anno-bg",   "anb", "Annotate using black background", 0},
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -656,14 +660,14 @@ int raspicamcontrol_parse_cmdline(RASPICAM_CAMERA_PARAMETERS *params, const char
 
    case CommandAText:
    {
-      if((unsigned)strlen(arg2)<MMAL_CAMERA_ANNOTATE_MAX_TEXT_LEN)
+      if((unsigned)strlen(arg2)<MMAL_CAMERA_ANNOTATE_MAX_TEXT_LEN_V2)
       {
          strcpy(params->annotations.text, arg2);
          params->annotations.enable = 1;
       }
       else
       {
-         fprintf(stderr,"Annotation text longer then 31, ignoring...\n");
+         fprintf(stderr,"Annotation text longer then 255, ignoring...\n");
       }
       used = 2;
       break;
@@ -718,7 +722,21 @@ int raspicamcontrol_parse_cmdline(RASPICAM_CAMERA_PARAMETERS *params, const char
       params->stillsDenoise = 0;
       used = 1;
       break;
+   }
 
+   case CommandAFrame:
+   {
+      params->annotations.show_frame_num = 1;
+      params->annotations.enable = 1;
+      used = 1;
+      break;
+   }
+
+   case CommandABackground:
+   {
+      params->annotations.black_text_background = 1;
+      used = 1;
+      break;
    }
 
    return used;
@@ -1350,7 +1368,7 @@ int raspicamcontrol_set_DRC(MMAL_COMPONENT_T *camera, MMAL_PARAMETER_DRC_STRENGT
 
 int raspicamcontrol_set_annotate(MMAL_COMPONENT_T *camera, const MMAL_PARAMETER_CAMERA_ANNOTATE_T *annotations)
 {
-   MMAL_PARAMETER_CAMERA_ANNOTATE_T anno = {{MMAL_PARAMETER_ANNOTATE, sizeof(MMAL_PARAMETER_CAMERA_ANNOTATE_T)}};
+   MMAL_PARAMETER_CAMERA_ANNOTATE_V2_T anno = {{MMAL_PARAMETER_ANNOTATE, sizeof(MMAL_PARAMETER_CAMERA_ANNOTATE_V2_T)}};
 
    if (!camera)
       return 1;
@@ -1362,6 +1380,8 @@ int raspicamcontrol_set_annotate(MMAL_COMPONENT_T *camera, const MMAL_PARAMETER_
    anno.show_lens = annotations->show_lens;
    anno.show_caf = annotations->show_caf;
    anno.show_motion = annotations->show_motion;
+   anno.show_frame_num = annotations->show_frame_num;
+   anno.black_text_background = annotations->black_text_background;
    
    return mmal_status_to_int(mmal_port_parameter_set(camera->control, &anno.hdr));
 }

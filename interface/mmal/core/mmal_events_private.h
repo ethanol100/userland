@@ -25,46 +25,43 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-// Font handling for graphicsx
+#ifndef MMAL_EVENTS_PRIVATE_H
+#define MMAL_EVENTS_PRIVATE_H
 
-#ifndef VGFT_H
-#define VGFT_H
-
-#include "interface/vcos/vcos.h"
-#include <VG/openvg.h>
-#include <ft2build.h>
-
-typedef int VGFT_BOOL;
-#define VGFT_FALSE 0
-#define VGFT_TRUE (!VGFT_FALSE)
-
-#include FT_FREETYPE_H
-
-/* Returns 0 on success */
-extern int vgft_init(void);
-extern void vgft_term(void);
-
-typedef struct {
-   VGFont vg_font;
-   FT_Face ft_face;
-} VGFT_FONT_T;
-
-/** Initialise a FT->VG font */
-VCOS_STATUS_T vgft_font_init(VGFT_FONT_T *font);
-
-/** Load a font file from memory */
-VCOS_STATUS_T vgft_font_load_mem(VGFT_FONT_T *font, void *mem, size_t len);
-
-/** Convert a font into VG glyphs */
-VCOS_STATUS_T vgft_font_convert_glyphs(VGFT_FONT_T *font, unsigned int char_height, unsigned int dpi_x, unsigned int dpi_y);
-
-/** Release a font. */
-void vgft_font_term(VGFT_FONT_T *font);
-
-void vgft_font_draw(VGFT_FONT_T *font, VGfloat x, VGfloat y, const char *text, unsigned text_length, VGbitfield paint_modes);
-
-void vgft_get_text_extents(VGFT_FONT_T *font, const char *text, unsigned text_length, VGfloat start_x, VGfloat start_y, VGfloat *w, VGfloat *h);
-
-VGfloat vgft_first_line_y_offset(VGFT_FONT_T *font);
-
+#ifdef __cplusplus
+extern "C" {
 #endif
+
+#include "mmal_events.h"
+
+/** Send an error event through the component's control port.
+ * The error event data will be the MMAL_STATUS_T passed in.
+ *
+ * @param component component to receive the error event.
+ * @param status the error status to be sent.
+ * @return MMAL_SUCCESS or an error if the event could not be sent.
+ */
+MMAL_STATUS_T mmal_event_error_send(MMAL_COMPONENT_T *component, MMAL_STATUS_T status);
+
+/** Send an eos event through a specific port.
+ *
+ * @param port port to receive the error event.
+ * @return MMAL_SUCCESS or an error if the event could not be sent.
+ */
+MMAL_STATUS_T mmal_event_eos_send(MMAL_PORT_T *port);
+
+/** Forward an event onto an output port.
+ * This will allocate a new event buffer on the output port, make a copy
+ * of the event buffer which will then be forwarded.
+ *
+ * @event event to forward.
+ * @param port port to forward event to.
+ * @return MMAL_SUCCESS or an error if the event could not be forwarded.
+ */
+MMAL_STATUS_T mmal_event_forward(MMAL_BUFFER_HEADER_T *event, MMAL_PORT_T *port);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MMAL_EVENTS_PRIVATE_H */

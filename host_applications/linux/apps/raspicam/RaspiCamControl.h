@@ -172,7 +172,7 @@ int raspicamcontrol_set_flips(MMAL_COMPONENT_T *camera, int hflip, int vflip);
 int raspicamcontrol_set_ROI(MMAL_COMPONENT_T *camera, PARAM_FLOAT_RECT_T rect);
 int raspicamcontrol_set_shutter_speed(MMAL_COMPONENT_T *camera, int speed_ms);
 int raspicamcontrol_set_DRC(MMAL_COMPONENT_T *camera, MMAL_PARAMETER_DRC_STRENGTH_T strength);
-int raspicamcontrol_set_annotate(MMAL_COMPONENT_T *camera, const MMAL_PARAMETER_CAMERA_ANNOTATE_T *annotations);
+int raspicamcontrol_set_annotate(MMAL_COMPONENT_T *camera, const MMAL_PARAMETER_CAMERA_ANNOTATE_V2_T *annotations);
 int raspicamcontrol_set_video_denoise(MMAL_COMPONENT_T *camera, int videoDenoise);
 int raspicamcontrol_set_stills_denoise(MMAL_COMPONENT_T *camera, int stillsDenoise);
 

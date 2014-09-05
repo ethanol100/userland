@@ -722,7 +722,6 @@ int raspicamcontrol_parse_cmdline(RASPICAM_CAMERA_PARAMETERS *params, const char
       params->stillsDenoise = 0;
       used = 1;
       break;
-   }
 
    case CommandAFrame:
    {
@@ -737,6 +736,7 @@ int raspicamcontrol_parse_cmdline(RASPICAM_CAMERA_PARAMETERS *params, const char
       params->annotations.black_text_background = 1;
       used = 1;
       break;
+   }
    }
 
    return used;
@@ -1366,7 +1366,7 @@ int raspicamcontrol_set_DRC(MMAL_COMPONENT_T *camera, MMAL_PARAMETER_DRC_STRENGT
    return mmal_status_to_int(mmal_port_parameter_set(camera->control, &drc.hdr));
 }
 
-int raspicamcontrol_set_annotate(MMAL_COMPONENT_T *camera, const MMAL_PARAMETER_CAMERA_ANNOTATE_T *annotations)
+int raspicamcontrol_set_annotate(MMAL_COMPONENT_T *camera, const MMAL_PARAMETER_CAMERA_ANNOTATE_V2_T *annotations)
 {
    MMAL_PARAMETER_CAMERA_ANNOTATE_V2_T anno = {{MMAL_PARAMETER_ANNOTATE, sizeof(MMAL_PARAMETER_CAMERA_ANNOTATE_V2_T)}};
 

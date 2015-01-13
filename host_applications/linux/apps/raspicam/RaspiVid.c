@@ -187,6 +187,7 @@ struct RASPIVID_STATE_S
    int cameraNum;                       /// Camera number
    int settings;                        /// Request settings from the camera
    int sensor_mode;			/// Sensor mode. 0=auto. Check docs/forum for modes selected by other values.
+   int use_still_port;                  /// Switch for using still port instead of video port
 };
 
 
@@ -240,6 +241,7 @@ static void display_valid_parameters(char *app_name);
 #define CommandCamSelect    24
 #define CommandSettings     25
 #define CommandSensorMode   26
+#define CommandStillMode    27
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -270,6 +272,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandCamSelect,     "-camselect",  "cs", "Select camera <number>. Default 0", 1 },
    { CommandSettings,      "-settings",   "set","Retrieve camera settings and write to stdout", 0},
    { CommandSensorMode,    "-mode",       "md", "Force sensor mode. 0=auto. See docs for other modes available", 1},
+   { CommandStillMode,     "-use-stills", "ust","Use the still mode for a stop motion like camera", 0},
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -339,6 +342,7 @@ static void default_status(RASPIVID_STATE *state)
    state->settings = 0;
    state->sensor_mode = 0;
 
+   state->use_still_port = 0;
    // Setup preview window defaults
    raspipreview_set_defaults(&state->preview_parameters);
 
@@ -695,6 +699,10 @@ static int parse_cmdline(int argc, const char **argv, RASPIVID_STATE *state)
             valid = 0;
          break;
       }
+
+      case CommandStillMode:
+         state->use_still_port = 1;
+         break;
 
       default:
       {
@@ -1164,6 +1172,7 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
    }
 
    //  set up the camera configuration
+   if(! state->use_still_port)
    {
       MMAL_PARAMETER_CAMERA_CONFIG_T cam_config =
       {
@@ -1181,7 +1190,25 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
       };
       mmal_port_parameter_set(camera->control, &cam_config.hdr);
    }
-
+   else
+   {
+      MMAL_PARAMETER_CAMERA_CONFIG_T cam_config =
+      {
+         { MMAL_PARAMETER_CAMERA_CONFIG, sizeof(cam_config) },
+         .max_stills_w = state->width,
+         .max_stills_h = state->height,
+         .stills_yuv422 = 0,
+         .one_shot_stills = 1,
+         .max_preview_video_w = state->width,
+         .max_preview_video_h = state->height,
+         .num_preview_video_frames = 3,
+         .stills_capture_circular_buffer_height = 0,
+         .fast_preview_resume = 0,
+         .use_stc_timestamp = MMAL_PARAM_TIMESTAMP_MODE_RESET_STC
+      };
+      mmal_port_parameter_set(camera->control, &cam_config.hdr);
+   }
+   
    // Now set up the port formats
 
    // Set the encode format on the Preview port
@@ -1226,6 +1253,26 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
    format->es->video.frame_rate.num = PREVIEW_FRAME_RATE_NUM;
    format->es->video.frame_rate.den = PREVIEW_FRAME_RATE_DEN;
 
+   if(state->use_still_port)
+   {
+      // Use a HD video mode with the width equal to 1280;
+      if(state->height<state->width)
+      {
+         state->preview_parameters.previewWindow.width=1280;
+         state->preview_parameters.previewWindow.height=state->preview_parameters.previewWindow.width*state->height/state->width;
+      }
+      else
+      {
+         state->preview_parameters.previewWindow.height=1280;
+         state->preview_parameters.previewWindow.width=state->preview_parameters.previewWindow.height*state->width/state->height;
+      }    
+      format->es->video.width = VCOS_ALIGN_UP(state->preview_parameters.previewWindow.width, 32);
+      format->es->video.height = VCOS_ALIGN_UP(state->preview_parameters.previewWindow.height, 16);
+      format->es->video.crop.width = state->preview_parameters.previewWindow.width;
+      format->es->video.crop.height = state->preview_parameters.previewWindow.height;
+      //format->es->video.crop.y = (960-state->preview_parameters.previewWindow.height)/2;
+   }
+   
    status = mmal_port_format_commit(preview_port);
 
    if (status != MMAL_SUCCESS)
@@ -1279,8 +1326,21 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
 
    format = still_port->format;
 
-   format->encoding = MMAL_ENCODING_OPAQUE;
+   format->encoding = MMAL_ENCODING_I420;
    format->encoding_variant = MMAL_ENCODING_I420;
+
+   if(state->camera_parameters.shutter_speed > 6000000)
+   {
+        MMAL_PARAMETER_FPS_RANGE_T fps_range = {{MMAL_PARAMETER_FPS_RANGE, sizeof(fps_range)},
+                                                     { 50, 1000 }, {166, 1000}};
+        mmal_port_parameter_set(still_port, &fps_range.hdr);
+   }
+   else if(state->camera_parameters.shutter_speed > 1000000)
+   {
+        MMAL_PARAMETER_FPS_RANGE_T fps_range = {{MMAL_PARAMETER_FPS_RANGE, sizeof(fps_range)},
+                                                     { 167, 1000 }, {999, 1000}};
+        mmal_port_parameter_set(still_port, &fps_range.hdr);
+   }
 
    format->es->video.width = VCOS_ALIGN_UP(state->width, 32);
    format->es->video.height = VCOS_ALIGN_UP(state->height, 16);
@@ -1312,6 +1372,12 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
       goto error;
    }
 
+   //reset crop for differnet sensor aspect ratio
+   if(state->use_still_port)
+   {
+     state->camera_parameters.roi.y+0.125;
+     state->camera_parameters.roi.h*0.75; 
+   }    
    raspicamcontrol_set_all_parameters(camera, &state->camera_parameters);
 
    state->camera_component = camera;
@@ -1846,8 +1912,14 @@ int main(int argc, const char **argv)
             fprintf(stderr, "Connecting camera stills port to encoder input port\n");
 
          // Now connect the camera to the encoder
-         status = connect_ports(camera_video_port, encoder_input_port, &state.encoder_connection);
-
+         if(!state.use_still_port)
+         {
+            status = connect_ports(camera_video_port, encoder_input_port, &state.encoder_connection);
+         }
+         else
+         {
+            status = connect_ports(camera_still_port, encoder_input_port, &state.encoder_connection);         
+         }
          if (status != MMAL_SUCCESS)
          {
             state.encoder_connection = NULL;
@@ -2007,12 +2079,22 @@ int main(int argc, const char **argv)
                   // Change state
 
                   state.bCapturing = !state.bCapturing;
-
-                  if (mmal_port_parameter_set_boolean(camera_video_port, MMAL_PARAMETER_CAPTURE, state.bCapturing) != MMAL_SUCCESS)
+                  if(!state.use_still_port)
                   {
-                     // How to handle?
+                     if (mmal_port_parameter_set_boolean(camera_video_port, MMAL_PARAMETER_CAPTURE, state.bCapturing) != MMAL_SUCCESS)
+                     {
+                        // How to handle?
+                     }
                   }
-
+                  else{
+                     // Only one is enabled... Always activate capture in use_still_port mode
+                     state.bCapturing=1;
+                     if (mmal_port_parameter_set_boolean(camera_still_port, MMAL_PARAMETER_CAPTURE, state.bCapturing) != MMAL_SUCCESS)
+                     {
+                     vcos_log_error("%s: Failed to start capture", __func__);
+                        // How to handle?
+                     }
+                  } 
                   // In circular buffer mode, exit and save the buffer (make sure we do this after having paused the capture
                   if(state.bCircularBuffer && !state.bCapturing)
                   {
@@ -2095,7 +2177,13 @@ error:
          fprintf(stderr, "Closing down\n");
 
       // Disable all our ports that are not handled by connections
-      check_disable_port(camera_still_port);
+      if(!state.use_still_port)
+      {
+         check_disable_port(camera_still_port);
+      }
+      else{
+         check_disable_port(camera_video_port);      
+      }
       check_disable_port(encoder_output_port);
 
       if (state.preview_parameters.wantPreview && state.preview_connection)

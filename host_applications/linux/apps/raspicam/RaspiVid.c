@@ -1255,22 +1255,15 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
 
    if(state->use_still_port)
    {
-      // Use a HD video mode with the width equal to 1280;
-      if(state->height<state->width)
-      {
-         state->preview_parameters.previewWindow.width=1280;
-         state->preview_parameters.previewWindow.height=state->preview_parameters.previewWindow.width*state->height/state->width;
-      }
-      else
-      {
-         state->preview_parameters.previewWindow.height=1280;
-         state->preview_parameters.previewWindow.width=state->preview_parameters.previewWindow.height*state->width/state->height;
-      }    
+      // Use the full fov 4x3 preview for stills
       format->es->video.width = VCOS_ALIGN_UP(state->preview_parameters.previewWindow.width, 32);
       format->es->video.height = VCOS_ALIGN_UP(state->preview_parameters.previewWindow.height, 16);
+      format->es->video.crop.x = 0;
+      format->es->video.crop.y = 0;
       format->es->video.crop.width = state->preview_parameters.previewWindow.width;
       format->es->video.crop.height = state->preview_parameters.previewWindow.height;
-      //format->es->video.crop.y = (960-state->preview_parameters.previewWindow.height)/2;
+      format->es->video.frame_rate.num = PREVIEW_FRAME_RATE_NUM;
+      format->es->video.frame_rate.den = PREVIEW_FRAME_RATE_DEN;
    }
    
    status = mmal_port_format_commit(preview_port);
@@ -1372,12 +1365,6 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
       goto error;
    }
 
-   //reset crop for differnet sensor aspect ratio
-   if(state->use_still_port)
-   {
-     state->camera_parameters.roi.y+0.125;
-     state->camera_parameters.roi.h*0.75; 
-   }    
    raspicamcontrol_set_all_parameters(camera, &state->camera_parameters);
 
    state->camera_component = camera;

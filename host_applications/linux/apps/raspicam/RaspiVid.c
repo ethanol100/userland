@@ -134,6 +134,7 @@ typedef struct
    char  header_bytes[29];
    int  header_wptr;
    FILE *imv_file_handle;               /// File handle to write inline motion vectors to.
+   FILE *pts_file_handle;               /// File timestamps
 } PORT_USERDATA;
 
 /** Structure containing all state information for the current run
@@ -164,7 +165,7 @@ struct RASPIVID_STATE_S
    int segmentWrap;                    /// Point at which to wrap segment counter
    int segmentNumber;                  /// Current segment counter
    int splitNow;                       /// Split at next possible i-frame if set to 1.
-   int splitWait;                      /// Switch if user wants splited files 
+   int splitWait;                      /// Switch if user wants splited files
 
    RASPIPREVIEW_PARAMETERS preview_parameters;   /// Preview setup parameters
    RASPICAM_CAMERA_PARAMETERS camera_parameters; /// Camera setup parameters
@@ -183,10 +184,14 @@ struct RASPIVID_STATE_S
 
    int inlineMotionVectors;             /// Encoder outputs inline Motion Vectors
    char *imv_filename;                  /// filename of inline Motion Vectors output
-   
    int cameraNum;                       /// Camera number
    int settings;                        /// Request settings from the camera
    int sensor_mode;			/// Sensor mode. 0=auto. Check docs/forum for modes selected by other values.
+   int frame;
+   char *pts_file;
+   int save_pts;
+   int64_t starttime;
+   int64_t lasttime;
 };
 
 
@@ -240,6 +245,7 @@ static void display_valid_parameters(char *app_name);
 #define CommandCamSelect    24
 #define CommandSettings     25
 #define CommandSensorMode   26
+#define CommandSavePTS      27
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -270,6 +276,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandCamSelect,     "-camselect",  "cs", "Select camera <number>. Default 0", 1 },
    { CommandSettings,      "-settings",   "set","Retrieve camera settings and write to stdout", 0},
    { CommandSensorMode,    "-mode",       "md", "Force sensor mode. 0=auto. See docs for other modes available", 1},
+   { CommandSavePTS,       "-save-pts",   "pts","Save Timestamt to file for mkvmerge", 1 },
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -334,11 +341,11 @@ static void default_status(RASPIVID_STATE *state)
    state->splitWait = 0;
 
    state->inlineMotionVectors = 0;
-   
    state->cameraNum = 0;
    state->settings = 0;
    state->sensor_mode = 0;
-
+   state->frame = 0;
+   state->save_pts = 0;
    // Setup preview window defaults
    raspipreview_set_defaults(&state->preview_parameters);
 
@@ -640,7 +647,7 @@ static int parse_cmdline(int argc, const char **argv, RASPIVID_STATE *state)
          break;
       }
 
-      case CommandSplitWait: // split files on restart 
+      case CommandSplitWait: // split files on restart
       {
          // Must enable inline headers for this to work
          state->bInlineHeaders = 1;
@@ -689,6 +696,23 @@ static int parse_cmdline(int argc, const char **argv, RASPIVID_STATE *state)
       {
          if (sscanf(argv[i + 1], "%u", &state->sensor_mode) == 1)
          {
+            i++;
+         }
+         else
+            valid = 0;
+         break;
+      }
+
+      case CommandSavePTS:  // output filename
+      {
+         state->save_pts = 1;
+         int len = strlen(argv[i + 1]);
+         if (len)
+         {
+            state->pts_file = malloc(len + 1);
+            vcos_assert(state->pts_file);
+            if (state->pts_file)
+               strncpy(state->pts_file, argv[i + 1], len+1);
             i++;
          }
          else
@@ -888,6 +912,33 @@ static FILE *open_imv_filename(RASPIVID_STATE *pState)
    return new_handle;
 }
 
+static FILE *open_pts_filename(RASPIVID_STATE *pState)
+{
+   FILE *new_handle = NULL;
+   char *filename = NULL;
+
+   filename = pState->pts_file;
+
+   if (filename)
+      new_handle = fopen(filename, "wb");
+
+   if (pState->verbose)
+   {
+      if (new_handle)
+         fprintf(stderr, "Opening pts output file \"%s\"\n", filename);
+      else
+         fprintf(stderr, "Failed to open new pts file \"%s\"\n", filename);
+   }
+   
+   if (new_handle)
+   {
+      //save header for mkvmerge
+      fprintf(new_handle,"# timecode format v2\n");
+   }
+         
+   return new_handle;
+}
+
 /**
  *  buffer header callback function for encoder
  *
@@ -996,7 +1047,7 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
             }
          }
       }
-      else 
+      else
       {
          // For segmented record mode, we need to see if we have exceeded our time/size,
          // but also since we have inline headers turned on we need to break when we get one to
@@ -1050,7 +1101,18 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
             }
             else
             {
-               bytes_written = fwrite(buffer->data, 1, buffer->length, pData->file_handle);            
+               bytes_written = fwrite(buffer->data, 1, buffer->length, pData->file_handle);
+               //printf("Bufferlag=%d\n",buffer->flags);
+               if(pData->pstate->save_pts && (buffer->flags & MMAL_BUFFER_HEADER_FLAG_FRAME_END || buffer->flags == 0 || buffer->flags & MMAL_BUFFER_HEADER_FLAG_KEYFRAME) && !(buffer->flags & MMAL_BUFFER_HEADER_FLAG_CONFIG))
+               {
+                  if(buffer->pts != MMAL_TIME_UNKNOWN && buffer->pts != pData->pstate->lasttime)
+                  {
+                    if(pData->pstate->frame==0)pData->pstate->starttime=buffer->pts;
+                    pData->pstate->lasttime=buffer->pts;
+                    fprintf(pData->pts_file_handle,"%f\n",(buffer->pts - pData->pstate->starttime)/1000.);
+                    pData->pstate->frame++;
+                  }
+               }
             }
 
             mmal_buffer_header_mem_unlock(buffer);
@@ -1110,18 +1172,18 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
       vcos_log_error("Failed to create camera component");
       goto error;
    }
-   
+
    MMAL_PARAMETER_INT32_T camera_num =
       {{MMAL_PARAMETER_CAMERA_NUM, sizeof(camera_num)}, state->cameraNum};
 
    status = mmal_port_parameter_set(camera->control, &camera_num.hdr);
-   
+
    if (status != MMAL_SUCCESS)
    {
       vcos_log_error("Could not select camera : error %d", status);
       goto error;
    }
-   
+
    if (!camera->output_num)
    {
       status = MMAL_ENOSYS;
@@ -1177,7 +1239,7 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
          .num_preview_video_frames = 3,
          .stills_capture_circular_buffer_height = 0,
          .fast_preview_resume = 0,
-         .use_stc_timestamp = MMAL_PARAM_TIMESTAMP_MODE_RESET_STC
+         .use_stc_timestamp = MMAL_PARAM_TIMESTAMP_MODE_RAW_STC
       };
       mmal_port_parameter_set(camera->control, &cam_config.hdr);
    }
@@ -1207,14 +1269,14 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
 
    //enable dynamic framerate if necessary
    if (state->camera_parameters.shutter_speed)
-   {   
+   {
       if (state->framerate > 1000000./state->camera_parameters.shutter_speed)
       {
          state->framerate=0;
          if (state->verbose)
             fprintf(stderr, "Enable dynamic frame rate to fulfil shutter speed requirement\n");
       }
-   } 
+   }
 
    format->encoding = MMAL_ENCODING_OPAQUE;
    format->es->video.width = VCOS_ALIGN_UP(state->width, 32);
@@ -1489,7 +1551,7 @@ static MMAL_STATUS_T create_encoder_component(RASPIVID_STATE *state)
       vcos_log_error("failed to set INLINE HEADER FLAG parameters");
       // Continue rather than abort..
    }
-   
+
    //set INLINE VECTORS flag to request motion vector estimates
    if (mmal_port_parameter_set_boolean(encoder_output, MMAL_PARAMETER_VIDEO_ENCODE_INLINE_VECTORS, state->inlineMotionVectors) != MMAL_SUCCESS)
    {
@@ -1899,6 +1961,27 @@ int main(int argc, const char **argv)
             }
          }
 
+         state.callback_data.pts_file_handle = NULL;
+
+         if (state.pts_file)
+         {
+            if (state.pts_file[0] == '-')
+            {
+               state.callback_data.pts_file_handle = stdout;
+            }
+            else
+            {
+               state.callback_data.pts_file_handle = open_pts_filename(&state);
+            }
+
+            if (!state.callback_data.pts_file_handle)
+            {
+               // Notify user, carry on but discarding encoded output buffers
+               fprintf(stderr, "Error opening output file: %s\nNo output file will be generated\n",state.pts_file);
+               state.save_pts=0;
+            }
+         }
+         
          if(state.bCircularBuffer)
          {
             if(state.bitrate == 0)
@@ -2000,7 +2083,7 @@ int main(int argc, const char **argv)
                         vcos_log_error("Unable to send a buffer to encoder output port (%d)", q);
                   }
                }
-               
+
                int initialCapturing=state.bCapturing;
                while (running)
                {
@@ -2026,7 +2109,7 @@ int main(int argc, const char **argv)
                      else
                         fprintf(stderr, "Pausing video capture\n");
                   }
-                  
+
                   if(state.splitWait)
                   {
                      if(state.bCapturing)
@@ -2039,7 +2122,7 @@ int main(int argc, const char **argv)
                      else
                      {
                         if(!initialCapturing)
-                           state.splitNow=1;   
+                           state.splitNow=1;
                      }
                      initialCapturing=0;
                   }
@@ -2110,6 +2193,8 @@ error:
          fclose(state.callback_data.file_handle);
       if (state.callback_data.imv_file_handle && state.callback_data.imv_file_handle != stdout)
          fclose(state.callback_data.imv_file_handle);
+      if (state.callback_data.pts_file_handle && state.callback_data.pts_file_handle != stdout)
+         fclose(state.callback_data.pts_file_handle);
 
       /* Disable components */
       if (state.encoder_component)

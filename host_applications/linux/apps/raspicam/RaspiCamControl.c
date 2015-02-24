@@ -659,11 +659,12 @@ int raspicamcontrol_parse_cmdline(RASPICAM_CAMERA_PARAMETERS *params, const char
       else
       {
          params->enable_annotate = ANNOTATE_USER_TEXT;
-         //copy string char by char and replace "\n" with newline character 
+         //copy arg2 to params->annotate_string char by char and replace "\n" with newline character 
+         int n=0;
          unsigned char c;  
          char const *s = arg2;
          char *t = &params->annotate_string[0];
-         while ((c = *s++))
+         while ((c = *s++) && n < MMAL_CAMERA_ANNOTATE_MAX_TEXT_LEN_V2-1)
          {
             if (c == '\\' && *s)
             {
@@ -680,11 +681,12 @@ int raspicamcontrol_parse_cmdline(RASPICAM_CAMERA_PARAMETERS *params, const char
                }
             }
             *(t++) = c;
+            n++;
          }
          *t='\0';
 
          //strncpy(params->annotate_string, arg2, MMAL_CAMERA_ANNOTATE_MAX_TEXT_LEN_V2);
-         params->annotate_string[MMAL_CAMERA_ANNOTATE_MAX_TEXT_LEN_V2-1] = '\0';
+         //params->annotate_string[MMAL_CAMERA_ANNOTATE_MAX_TEXT_LEN_V2-1] = '\0';
       }
       used=2;
       break;

@@ -202,6 +202,7 @@ struct RASPIVID_STATE_S
    int save_pts;
    int64_t starttime;
    int64_t lasttime;
+   int additionalBuffer;
 };
 
 
@@ -282,6 +283,7 @@ static void display_valid_parameters(char *app_name);
 #define CommandSavePTS      29
 #define CommandCodec        30
 #define CommandLevel        31
+#define CommandAdditionalBuffer  32
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -317,6 +319,7 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandSavePTS,       "-save-pts",   "pts","Save Timestamps to file for mkvmerge", 1 },
    { CommandCodec,         "-codec",      "cd", "Specify the codec to use - H264 (default) or MJPEG", 1 },
    { CommandLevel,         "-level",      "lev","Specify H264 level to use for encoding", 1},
+   { CommandAdditionalBuffer,"-additional-buffer",      "adb","Add additional buffer to the preview (3+x)", 1},
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -391,6 +394,9 @@ static void default_status(RASPIVID_STATE *state)
 
    state->frame = 0;
    state->save_pts = 0;
+
+   state->additionalBuffer = 0;
+
 
    // Setup preview window defaults
    raspipreview_set_defaults(&state->preview_parameters);
@@ -801,6 +807,15 @@ static int parse_cmdline(int argc, const char **argv, RASPIVID_STATE *state)
             state->profile = MMAL_VIDEO_LEVEL_H264_4;
 
          i++;
+         break;
+      }
+
+      case CommandAdditionalBuffer:
+      {
+         if (sscanf(argv[i + 1], "%u", &state->additionalBuffer) != 1)
+            valid = 0;
+         else
+            i++;
          break;
       }
 
@@ -1454,7 +1469,7 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
          .one_shot_stills = 0,
          .max_preview_video_w = state->width,
          .max_preview_video_h = state->height,
-         .num_preview_video_frames = 3,
+         .num_preview_video_frames = 3+state->additionalBuffer,
          .stills_capture_circular_buffer_height = 0,
          .fast_preview_resume = 0,
          .use_stc_timestamp = MMAL_PARAM_TIMESTAMP_MODE_RAW_STC

@@ -94,6 +94,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define VIDEO_OUTPUT_BUFFERS_NUM 3
 
 // Max bitrate we allow for recording
+const int MAX_BITRATE_MJPEG = 62500000; // 62.5Mbits/s
 const int MAX_BITRATE_LEVEL4 = 25000000; // 25Mbits/s
 const int MAX_BITRATE_LEVEL42 = 62500000; // 62.5Mbits/s
 
@@ -202,7 +203,6 @@ struct RASPIVID_STATE_S
    int save_pts;
    int64_t starttime;
    int64_t lasttime;
-   int additionalBuffer;
 };
 
 
@@ -283,7 +283,6 @@ static void display_valid_parameters(char *app_name);
 #define CommandSavePTS      29
 #define CommandCodec        30
 #define CommandLevel        31
-#define CommandAdditionalBuffer  32
 
 static COMMAND_LIST cmdline_commands[] =
 {
@@ -319,7 +318,6 @@ static COMMAND_LIST cmdline_commands[] =
    { CommandSavePTS,       "-save-pts",   "pts","Save Timestamps to file for mkvmerge", 1 },
    { CommandCodec,         "-codec",      "cd", "Specify the codec to use - H264 (default) or MJPEG", 1 },
    { CommandLevel,         "-level",      "lev","Specify H264 level to use for encoding", 1},
-   { CommandAdditionalBuffer,"-additional-buffer",      "adb","Add additional buffer to the preview (3+x)", 1},
 };
 
 static int cmdline_commands_size = sizeof(cmdline_commands) / sizeof(cmdline_commands[0]);
@@ -394,8 +392,6 @@ static void default_status(RASPIVID_STATE *state)
 
    state->frame = 0;
    state->save_pts = 0;
-
-   state->additionalBuffer = 0;
 
 
    // Setup preview window defaults
@@ -807,15 +803,6 @@ static int parse_cmdline(int argc, const char **argv, RASPIVID_STATE *state)
             state->profile = MMAL_VIDEO_LEVEL_H264_4;
 
          i++;
-         break;
-      }
-
-      case CommandAdditionalBuffer:
-      {
-         if (sscanf(argv[i + 1], "%u", &state->additionalBuffer) != 1)
-            valid = 0;
-         else
-            i++;
          break;
       }
 
@@ -1469,7 +1456,7 @@ static MMAL_STATUS_T create_camera_component(RASPIVID_STATE *state)
          .one_shot_stills = 0,
          .max_preview_video_w = state->width,
          .max_preview_video_h = state->height,
-         .num_preview_video_frames = 3+state->additionalBuffer,
+         .num_preview_video_frames = 3 + vcos_max(0, (state->framerate-30)/10),
          .stills_capture_circular_buffer_height = 0,
          .fast_preview_resume = 0,
          .use_stc_timestamp = MMAL_PARAM_TIMESTAMP_MODE_RAW_STC
@@ -1680,20 +1667,31 @@ static MMAL_STATUS_T create_encoder_component(RASPIVID_STATE *state)
    // Only supporting H264 at the moment
    encoder_output->format->encoding = state->encoding;
 
-   if(state->level==MMAL_VIDEO_LEVEL_H264_4)
+   if(state->encoding == MMAL_ENCODING_H264)
    {
-      if(state->bitrate > MAX_BITRATE_LEVEL4)
+      if(state->level == MMAL_VIDEO_LEVEL_H264_4)
       {
-         fprintf(stderr, "Bitrate too high: Reducing to 25MBit/s\n");
-         state->bitrate = MAX_BITRATE_LEVEL4;
+         if(state->bitrate > MAX_BITRATE_LEVEL4)
+         {
+            fprintf(stderr, "Bitrate too high: Reducing to 25MBit/s\n");
+            state->bitrate = MAX_BITRATE_LEVEL4;
+         }
+      }
+      else
+      {
+         if(state->bitrate > MAX_BITRATE_LEVEL42)
+         {
+            fprintf(stderr, "Bitrate too high: Reducing to 62.5MBit/s\n");
+            state->bitrate = MAX_BITRATE_LEVEL42;
+         }
       }
    }
-   else
+   else if(state->encoding == MMAL_ENCODING_MJPEG)
    {
-      if(state->bitrate > MAX_BITRATE_LEVEL42)
+      if(state->bitrate > MAX_BITRATE_MJPEG)
       {
          fprintf(stderr, "Bitrate too high: Reducing to 62.5MBit/s\n");
-         state->bitrate = MAX_BITRATE_LEVEL42;
+         state->bitrate = MAX_BITRATE_MJPEG;
       }
    }
    
@@ -1788,17 +1786,18 @@ static MMAL_STATUS_T create_encoder_component(RASPIVID_STATE *state)
       param.hdr.size = sizeof(param);
 
       param.profile[0].profile = state->profile;
-      
-      if(state->width/16*state->height/16*state->framerate>245760)
+
+      if((VCOS_ALIGN_UP(state->width,16) >> 4) * (VCOS_ALIGN_UP(state->height,16) >> 4) * state->framerate > 245760)
       {
-         if(state->width/16*state->height/16*state->framerate<522240)
+         if((VCOS_ALIGN_UP(state->width,16) >> 4) * (VCOS_ALIGN_UP(state->height,16) >> 4) * state->framerate <= 522240)
          {
             fprintf(stderr, "Too many macroblocks/s: Increasing H264 Level to 4.2\n");
             state->level=MMAL_VIDEO_LEVEL_H264_42;
          }
          else
          {
-            fprintf(stderr, "Error: Too many macroblocks/s requested\n");         
+            vcos_log_error("Too many macroblocks/s requested");
+            goto error;
          }
       }
       
